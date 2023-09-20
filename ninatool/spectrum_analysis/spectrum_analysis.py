@@ -7,7 +7,7 @@ from sympy import S, symbols, factorial, sqrt, exp, expand, degree_list
 from sympy.physics.secondquant import B, Dagger
 
 from ninatool.internal.structures import loop
-from ninatool.internal.elements import L, J
+from ninatool.internal.elements import L, J, C
 from ninatool.circuits.base_circuits import snail
 from ninatool.internal.tools import unitsConverter
 
@@ -308,22 +308,39 @@ class HarmonicDiagonalization:
             return cos_allm1 * cos_1 - sin_allm1 * sin_1
 
 
-# if __name__ == "__main__":
-#     order = 5
-#     J0 = J(ic=1.0, order=order)
-#     left_elements = [J0, ]
-#     right_elements = []
-#     mytmon = loop(
-#         left_branch=left_elements,
-#         right_branch=right_elements,
-#         stray_inductance=False,
-#         name="mytmon"
-#     )
-#     spanning_tree = ["J0", ]
-#     unitconverter = unitsConverter(current_units=1e-6)
-#     coordination_matrix = np.array([[1, ]])
-#     C = unitconverter.convert_from_fF_to_NINA(1.0)
-#     capacitance_matrix = np.array([[C, ]])
+if __name__ == "__main__":
+    flux = 0.0
+    order = 5
+    J0 = J(ic=1.0, order=order, name="J0")
+    L0 = L(L=1.0, order=order, name="L0")
+    unitconverter = unitsConverter(current_units=1e-6)
+    CJ_SI = 10.0 #fF
+    CJ = unitconverter.convert_from_fF_to_NINA(CJ_SI)
+    left_elements = [J0, ]
+    right_elements = [L0, ]
+    myrfsquid = loop(
+        left_branch=left_elements,
+        right_branch=right_elements,
+        stray_inductance=False,
+        name="myrfsquid"
+    )
+    spanning_tree = ["J0", ]
+    coordination_matrix = np.array([[1, ],
+                                    [-1, ]])
+    capacitance_matrix = np.array([[CJ, ]])
+    node_vars_to_phase_vars = np.array([[1, ], ])
+    harm_diag = HarmonicDiagonalization(
+        capacitance_matrix,
+        coordination_matrix,
+        spanning_tree,
+        myrfsquid,
+        node_vars_to_phase_vars,
+        flux,
+        unit_converter=unitconverter,
+    )
+    result = harm_diag.normal_ordered_potential(order=3)
+    print(0)
+
 
 
 if __name__ == "__main__":

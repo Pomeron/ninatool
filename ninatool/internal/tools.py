@@ -33,11 +33,18 @@ class unitsConverter:
         return self.energy_units / h
 
     @property
+    def omega_units(self):
+        return self.energy_units * 2.0 * pi / h
+
+    @property
     def impedance_units(self):
         return np.sqrt(self.inductance_units / self.capacitance_units)
 
     def convert_from_fF_to_NINA(self, capacitance_in_fF):
         return capacitance_in_fF * 10 ** (-15) / self.capacitance_units
+
+    def energy_NINA_to_GHz(self, energy_in_NINA):
+        return energy_in_NINA * self.energy_units * 10**(-9) / h
     
     @current_units.setter
     def current_units(self, value):
