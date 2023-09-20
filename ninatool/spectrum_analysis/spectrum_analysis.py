@@ -1,13 +1,18 @@
 import numpy as np
 import scipy as sp
 from numpy import ndarray
+from scipy.constants import h, e
 from scipy.linalg import eigh
-from sympy import S, symbols, factorial, sqrt, exp, expand
+from sympy import S, symbols, factorial, sqrt, exp, expand, degree_list
 from sympy.physics.secondquant import B, Dagger
 
 from ninatool.internal.structures import loop
 from ninatool.internal.elements import L, J
 from ninatool.circuits.base_circuits import snail
+from ninatool.internal.tools import unitsConverter
+
+Phi0 = h / (2 * e)
+hbar = h / (2.0 * np.pi)
 
 
 class HarmonicDiagonalization:
@@ -42,6 +47,7 @@ class HarmonicDiagonalization:
         loop_instance: loop,
         node_vars_to_phase_vars: ndarray,
         flux: float,
+        unit_converter: unitsConverter,
     ):
         self.capacitance_matrix = capacitance_matrix
         self.coordination_matrix = coordination_matrix
@@ -50,9 +56,12 @@ class HarmonicDiagonalization:
         self.node_vars_to_phase_vars = node_vars_to_phase_vars
         self.flux = flux
         char_list = "a b c d e f g h i j k l m n o p q r s t u v w x y z".split()
+        char_dag_list = [char + "\u2020" for char in char_list]
         self.lowering_ops = symbols(char_list)
+        self.raising_ops = symbols(char_dag_list)
         op_list = [f"$n{char}$" for char in char_list]
         self.op_list = symbols(op_list)
+        self.unit_converter = unit_converter
 
     def find_minimum_node_variables(self) -> ndarray:
         self.loop_instance.interpolate_results(2.0 * np.pi * self.flux)
@@ -70,9 +79,6 @@ class HarmonicDiagonalization:
     def gamma_matrix(self) -> ndarray:
         """Returns linearized potential matrix
 
-        Note that we must divide by Phi_0^2 since Ej/Phi_0^2 = 1/Lj,
-        or one over the effective impedance of the junction.
-
         We are imagining an arbitrary loop of JJs where we have
         changed variables to the difference variables, so that
         each junction is a function of just one variable, except for
@@ -85,27 +91,27 @@ class HarmonicDiagonalization:
         dim = self.capacitance_matrix.shape[0]
         minimum_location = self.find_minimum_node_variables()
         gamma_matrix = np.zeros((dim, dim))
-        # how to ensure ordering is the same between elements and
-        # entries in coordination_matrix?
-        for idx, node_var_spec in enumerate(self.coordination_matrix):
-            inv_inductance = self.loop_instance.elements[idx].ic
-            if isinstance(self.loop_instance.elements[idx], J):
+        # below assumes that the rows of the coordination correspond to
+        # the entries in self.loop_instance.elements
+        for node_idx, node_var_spec in enumerate(self.coordination_matrix):
+            # the below relationship holds bc we are using NINA units
+            # (EJ and Ic are the same and Ic and LJ are reciprocal)
+            inv_inductance = self.loop_instance.elements[node_idx].ic
+            if isinstance(self.loop_instance.elements[node_idx], J):
 
                 def _inductance_func(equilibrium_phase_):
                     return np.cos(equilibrium_phase_)
-
-            elif isinstance(self.loop_instance.elements[idx], L):
+            elif isinstance(self.loop_instance.elements[node_idx], L):
 
                 def _inductance_func(equilibrium_phase_):
                     return 1
-
             else:
                 raise RuntimeError(
                     "should only have inductors and junctions in the potential"
                 )
             nonzero_idxs = np.argwhere(node_var_spec)[:, 0]
             equilibrium_phase = minimum_location @ node_var_spec
-            if self.loop_instance.elements[idx].name not in self.spanning_tree:
+            if self.loop_instance.elements[node_idx].name not in self.spanning_tree:
                 equilibrium_phase = equilibrium_phase - 2.0 * np.pi * self.flux
             if len(nonzero_idxs) == 1:  # only a single node variable
                 gamma_matrix[
@@ -128,8 +134,7 @@ class HarmonicDiagonalization:
                 ] += -inv_inductance * _inductance_func(equilibrium_phase)
             else:
                 raise RuntimeError("each branch should only be connected to two nodes")
-        Phi0 = 0.5  # units where e_charge, hbar = 1; Phi0 = hbar / (2 * e)
-        return gamma_matrix / Phi0**2
+        return gamma_matrix
 
     def eigensystem_normal_modes(self) -> (ndarray, ndarray):
         """Returns squared normal mode frequencies, matrix of eigenvectors
@@ -165,135 +170,173 @@ class HarmonicDiagonalization:
         ndarray
         """
         omega_squared_array, eigenvectors = self.eigensystem_normal_modes()
-        Z0 = 0.25  # units where e and hbar = 1; Z0 = hbar / (2 * e)**2
-        return np.array(
+        Z0 = hbar / (2 * e)**2 / self.unit_converter.impedance_units
+        Ximat = np.array(
             [
                 eigenvectors[:, i] * omega_squared ** (-1 / 4) * np.sqrt(1.0 / Z0)
                 for i, omega_squared in enumerate(omega_squared_array)
             ]
         ).T
+        assert np.allclose(Ximat.T @ self.capacitance_matrix @ Ximat, np.diag(omega_squared_array**(-1/2)) / Z0)
+        return Ximat
 
-    # should be trivial to include kinetic
-    def normal_ordered_potential(self, order=5):
+    def normal_ordered_kinetic(self):
         dim = self.capacitance_matrix.shape[0]
-        op_list = self.op_list[0:dim]
+        op_list = list(zip(self.lowering_ops[0:dim], self.raising_ops[0:dim]))
+        omega_squared, _ = self.eigensystem_normal_modes()
+        kin = S(0)
+        for idx, omega_sq in enumerate(omega_squared):
+            op, op_dag = op_list[idx]
+            omega = S(np.sqrt(omega_sq))
+            kin += -S(0.5) * omega * (op_dag * op_dag + op * op - S(2) * op_dag * op)
+        return kin
+
+    def _normal_ordered_kinetic_test(self):
+        dim = self.capacitance_matrix.shape[0]
+        op_list = list(zip(self.lowering_ops[0:dim], self.raising_ops[0:dim]))
+        kin = S(0)
+        Xi = self.Xi_matrix()
+        Xi_inv = sp.linalg.inv(Xi)
+        transformed_EC = Xi_inv @ sp.linalg.inv(self.capacitance_matrix) @ Xi_inv.T
+        for idx_1 in range(dim):
+            for idx_2 in range(dim):
+                op_1, op_1_dag = op_list[idx_1]
+                op_2, op_2_dag = op_list[idx_2]
+                kin += -4 * transformed_EC[idx_1, idx_2] * (op_1 - op_1_dag) * (op_2 - op_2_dag)
+        return self._filter_small_coeffs_and_high_order(expand(kin), threshold=1e-9, order=4)
+
+    def normal_ordered_potential(self, threshold=1e-8, order=5):
+        dim = self.capacitance_matrix.shape[0]
+        op_list = list(zip(self.lowering_ops[0:dim], self.raising_ops[0:dim]))
         pot = S(0)
         Xi = self.Xi_matrix()
-        for idx, node_var_spec in enumerate(self.coordination_matrix):
-            nonzero_idxs = np.argwhere(node_var_spec)[0]
-            # abusing notation here a little: of course in the cosine,
-            # the operator isn't a^{\dagger}a
+        for node_idx, node_var_spec in enumerate(self.coordination_matrix):
+            EJ = self.loop_instance.elements[node_idx].ic
+            nonzero_idxs = np.argwhere(node_var_spec)[:, 0]
             normal_mode_prefactors = np.sum(
                 [Xi[idx, :] * node_var_spec[idx] for idx in nonzero_idxs], axis=0
             )
-            if isinstance(self.loop_instance.elements[idx], J):
-                if self.loop_instance.elements[idx].name not in self.spanning_tree:
-                    pot += self.expand_cosine(
+            if isinstance(self.loop_instance.elements[node_idx], J):
+                if self.loop_instance.elements[node_idx].name not in self.spanning_tree:
+                    pot += -EJ * (self.expand_cosine(
                         normal_mode_prefactors, op_list, order=order
                     ) * np.cos(2.0 * np.pi * self.flux) + self.expand_sine(
                         normal_mode_prefactors, op_list, order=order
                     ) * np.sin(
                         2.0 * np.pi * self.flux
-                    )
+                    ))
                 else:
-                    pot += self.expand_cosine(
-                        normal_mode_prefactors, op_list, order=order
-                    )
-            elif isinstance(self.loop_instance.elements[idx], L):
-                pot += self.expand_cosine(normal_mode_prefactors, op_list, order=2)
+                    pot += -EJ * self.expand_cosine(normal_mode_prefactors, op_list, order=order)
+            elif isinstance(self.loop_instance.elements[node_idx], L):
+                pot += -EJ * self.expand_cosine(normal_mode_prefactors, op_list, order=2)
             else:
-                raise RuntimeError(
-                    "should only have inductors and junctions in the potential"
-                )
+                raise RuntimeError("should only have inductors and junctions in the potential")
+        pot = self._filter_small_coeffs_and_high_order(expand(pot), threshold=threshold, order=order)
         return pot
+
+    @staticmethod
+    def _filter_small_coeffs_and_high_order(symp_expr, threshold=1e-8, order=5):
+        terms = symp_expr.as_ordered_terms()
+        new_term = S(0)
+        for idx, term in enumerate(terms):
+            if not term.is_Float:
+                if abs(term.args[0]) >= threshold and sum(degree_list(term)) <= order:
+                    new_term += term
+        return new_term
+
+    def _expanded_sines(self, prefactors, op_strs, order):
+        last_pref = [prefactors[-1], ]
+        last_op = [op_strs[-1], ]
+        sin_allm1 = self.expand_sine(
+            prefactors[0:-1], op_strs[0:-1], order=order
+        )
+        cos_1 = self.expand_cosine(
+            last_pref, last_op, order=order,
+        )
+        cos_allm1 = self.expand_cosine(
+            prefactors[0:-1], op_strs[0:-1], order=order
+        )
+        sin_1 = self.expand_sine(
+            last_pref, last_op, order=order,
+        )
+        return sin_allm1, cos_allm1, cos_1, sin_1
 
     def expand_sine(self, prefactors, op_strs, order=5):
         if len(prefactors) == len(op_strs) == 1:
             xi = S(prefactors[0])
-            op = op_strs[0]
+            op, op_dag = op_strs[0]
             return sum(
                 [
-                    exp(-(xi**2) / 2)
-                    * xi
-                    # BELOW IS WRONG N+M SHOULD BE ODD WANT TO SUM OVER BOTH
-                    * (-(xi**2)) ** (S(2 * S(ord_) - 1) / 2)
-                    / factorial(S(ord_)) ** 2
-                    * op ** S(ord_)
-                    for ord_ in range(1, order + 1, 2)
+                    exp(-(xi**2) / S(4))
+                    * (xi / S(np.sqrt(2)))
+                    * (-(xi**2) / S(2)) ** S((n + m - 1) / 2)
+                    / (factorial(S(n)) * factorial(S(m)))
+                    * op_dag ** S(n)
+                    * op ** S(m)
+                    for n in range(0, order + 1)
+                    for m in range(0, order + 1)
+                    if (n+m) % 2 == 1 and n + m <= order
                 ]
             )
         else:
-            return self.expand_sine(
-                prefactors[0:-1], op_strs[0:-1], order=order
-            ) * self.expand_cosine(
-                [
-                    prefactors[-1],
-                ],
-                [
-                    op_strs[-1],
-                ],
-                order=order,
-            ) + self.expand_cosine(
-                prefactors[0:-1], op_strs[0:-1], order=order
-            ) * self.expand_sine(
-                [
-                    prefactors[-1],
-                ],
-                [
-                    op_strs[-1],
-                ],
-                order=order,
+            sin_allm1, cos_allm1, cos_1, sin_1 = self._expanded_sines(
+                prefactors, op_strs, order
             )
+            return sin_allm1 * cos_1 + cos_allm1 * sin_1
 
     def expand_cosine(self, prefactors, op_strs, order=5):
         if len(prefactors) == len(op_strs) == 1:
-            # simplification here of making RWA: also of course get counter-rotating terms,
-            # may want to be included in the future
             xi = S(prefactors[0])
-            op = op_strs[0]
+            op, op_dag = op_strs[0]
+            # cos[(xi / sqrt(2)) * (a + a^{\dag})]
             return sum(
                 [
-                    exp(-(xi**2) / 2)
-                    * (-(xi**2)) ** S(ord_)
-                    / factorial(S(ord_)) ** 2
-                    * op ** S(ord_)
-                    for ord_ in range(0, order + 1, 2)
+                    exp(-(xi**2) / S(4))
+                    * (-(xi**2) / S(2)) ** S((n+m)/2)
+                    / (factorial(S(n)) * factorial(S(m)))
+                    * op_dag ** S(n)
+                    * op ** S(m)
+                    for n in range(0, order + 1)
+                    for m in range(0, order + 1)
+                    if (n + m) % 2 == 0 and n + m <= order
                 ]
             )
         else:
-            return self.expand_cosine(
-                prefactors[0:-1], op_strs[0:-1], order=order
-            ) * self.expand_cosine(
-                [
-                    prefactors[-1],
-                ],
-                [
-                    op_strs[-1],
-                ],
-                order=order,
-            ) - self.expand_sine(
-                prefactors[0:-1], op_strs[0:-1], order=order
-            ) * self.expand_sine(
-                [
-                    prefactors[-1],
-                ],
-                [
-                    op_strs[-1],
-                ],
-                order=order,
+            sin_allm1, cos_allm1, cos_1, sin_1 = self._expanded_sines(
+                prefactors, op_strs, order
             )
+            return cos_allm1 * cos_1 - sin_allm1 * sin_1
+
+
+# if __name__ == "__main__":
+#     order = 5
+#     J0 = J(ic=1.0, order=order)
+#     left_elements = [J0, ]
+#     right_elements = []
+#     mytmon = loop(
+#         left_branch=left_elements,
+#         right_branch=right_elements,
+#         stray_inductance=False,
+#         name="mytmon"
+#     )
+#     spanning_tree = ["J0", ]
+#     unitconverter = unitsConverter(current_units=1e-6)
+#     coordination_matrix = np.array([[1, ]])
+#     C = unitconverter.convert_from_fF_to_NINA(1.0)
+#     capacitance_matrix = np.array([[C, ]])
 
 
 if __name__ == "__main__":
-    flux = 0.3
+    flux = 0.0
     snail = snail()
     spanning_tree = ["J1", "J2", "J3"]
     coordination_matrix = np.array([[1, 0, 0], [-1, 1, 0], [0, -1, 1], [0, 0, -1]])
-    CJ = 1.0
-    C = 1.0
-    capacitance_matrix = np.array(
-        [[C + 2 * CJ, -CJ, 0], [-CJ, 2 * CJ, -CJ], [0, -CJ, 2 * CJ]]
-    )
+    CJ_SI = 10.0  # fF
+    C_SI = 100.0  # fF
+    unitconverter = unitsConverter(current_units=1e-6)
+    CJ = unitconverter.convert_from_fF_to_NINA(CJ_SI)
+    C = unitconverter.convert_from_fF_to_NINA(C_SI)
+    capacitance_matrix = np.array([[C + 2 * CJ, -CJ, 0], [-CJ, 2 * CJ, -CJ], [0, -CJ, 2 * CJ]])
     node_vars_to_phase_vars = coordination_matrix[0:3, :]
     harm_diag = HarmonicDiagonalization(
         capacitance_matrix,
@@ -302,6 +345,7 @@ if __name__ == "__main__":
         snail,
         node_vars_to_phase_vars,
         flux,
+        unit_converter=unitconverter,
     )
-    result = harm_diag.normal_ordered_potential(order=5)
+    result = harm_diag.normal_ordered_potential(order=3)
     print(0)
