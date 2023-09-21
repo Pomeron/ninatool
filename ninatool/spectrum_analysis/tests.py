@@ -8,6 +8,7 @@ from ninatool.internal.tools import unitsConverter
 from scipy.constants import h, e
 Phi0 = h / (2 * e)
 hbar = h / (2.0 * np.pi)
+JtoGHz = 10**(-9) / h
 
 
 
@@ -51,7 +52,6 @@ class TestHarmonicDiagonalization:
         )
 
     def test_energy_to_GHz(self):
-        JtoGHz = 10**(-9) / h
         EC_1 = JtoGHz * 10**15 * (e**2 / (2 * self.CJ_SI))
         EC_2 = self.harm_diag.unit_converter.energy_NINA_to_GHz(self.EC)
         assert EC_1 == EC_2
@@ -63,7 +63,6 @@ class TestHarmonicDiagonalization:
     def test_omega(self):
         omega_sq, _ = self.harm_diag.eigensystem_normal_modes()
         omega = np.sqrt(omega_sq)[0]
-        ind = 1 / (self.EJ + self.EL)
-        cap = 1 / self.EC
-        analytic_omega = 1 / (ind * cap)**(1/2)
-        assert omega == analytic_omega
+        test_E = omega * self.harm_diag.unit_converter.omega_units * hbar * JtoGHz
+        true_E = self.harm_diag.unit_converter.energy_NINA_to_GHz(np.sqrt(8 * self.EC * (self.EJ + self.EL)))
+        assert test_E == true_E
