@@ -96,9 +96,10 @@ class HarmonicDiagonalization:
                 if elem.name in self.spanning_tree
             ]
         )
-        return (
-            sp.linalg.inv(self.node_vars_to_phase_vars) @ minimum_loc_difference_phases
-        )
+        min_node_variables = sp.linalg.inv(self.node_vars_to_phase_vars) @ minimum_loc_difference_phases
+        min_result = sp.optimize.minimize(self.potential, x0=min_node_variables)
+        assert np.allclose(self.potential(min_result.x), self.potential(min_node_variables), rtol=1e-3, atol=1e-1)
+        return min_node_variables
 
     def gamma_matrix(self) -> ndarray:
         """Returns linearized potential matrix
@@ -205,6 +206,25 @@ class HarmonicDiagonalization:
         ).T
         assert np.allclose(Ximat.T @ self.capacitance_matrix @ Ximat, np.diag(omega_squared_array**(-1/2)) / Z0)
         return Ximat
+
+    def potential(self, phi):
+        pot = 0.0
+        for node_idx, node_var_spec in enumerate(self.coordination_matrix):
+            Ic = self.loop_instance.elements[node_idx].ic
+            EJ = Ic * self.unit_converter.current_units * hbar * JtoGHz / (2 * e)
+            if self.loop_instance.elements[node_idx].name not in self.spanning_tree:
+                phase = node_var_spec @ phi - 2.0 * np.pi * self.flux
+            else:
+                phase = node_var_spec @ phi
+            if isinstance(self.loop_instance.elements[node_idx], J):
+                pot += -EJ * np.cos(phase)
+            elif isinstance(self.loop_instance.elements[node_idx], L):
+                pot += 0.5 * EJ * phase**2
+            else:
+                raise RuntimeError(
+                    "should only have inductors and junctions in the potential"
+                )
+        return pot
 
     def normal_ordered_kinetic(self):
         dim = self.capacitance_matrix.shape[0]
@@ -336,6 +356,20 @@ class HarmonicDiagonalization:
             )
             return cos_allm1 * cos_1 - sin_allm1 * sin_1
 
+    @staticmethod
+    def return_coeff(symp_expr, poly):
+        """symp_expr.coeff(poly) will return all terms that include poly,
+        even ones that also include other operators. So only want to ask
+        for coeff of the term that has just poly as the operator content
+        """
+        coeffs = symp_expr.coeff(poly)
+        terms = coeffs.as_ordered_terms()
+        new_term = S(0)
+        for idx, term in enumerate(terms):
+            if term.is_Float:
+                new_term += term
+        return new_term
+
     def hamiltonian_from_sympy(self, sym_H, cutoff=3):
         sym_H = sym_H.as_ordered_terms()
         a = destroy(cutoff)
@@ -354,16 +388,55 @@ class HarmonicDiagonalization:
         return total_H
 
 
+# SNAIL
+if __name__ == "__main__":
+    flux = 0.04
+    snail = snail()
+    snail.interpolate_results(2.0 * np.pi * 0.04)
+    flux_vals = np.linspace(0.0, 0.3, 8)
+    spanning_tree = ["J1", "J2", "J3"]
+    coordination_matrix = np.array([[1, 0, 0], [-1, 1, 0], [0, -1, 1], [0, 0, -1]])
+    # CJ_SI = 10.0  # fF
+    # C_SI = 100.0  # fF
+    unitconverter = unitsConverter(current_units=1e-8)
+    # CJ = unitconverter.convert_from_fF_to_NINA(CJ_SI)
+    # C = unitconverter.convert_from_fF_to_NINA(C_SI)
+    EC = 0.2
+    ECJ = 2.0
+    C = 1 / (2 * EC)
+    CJ = 1/ (2 * ECJ)
+    capacitance_matrix = np.array([[C + 2 * CJ, -CJ, 0], [-CJ, 2 * CJ, -CJ], [0, -CJ, 2 * CJ]])
+    node_vars_to_phase_vars = coordination_matrix[0:3, :]
+    harm_diag = HarmonicDiagonalization(
+        capacitance_matrix,
+        coordination_matrix,
+        spanning_tree,
+        snail,
+        node_vars_to_phase_vars,
+        flux,
+        unit_converter=unitconverter,
+    )
+    result_pot = harm_diag.normal_ordered_potential(order=4)
+    result_kin = harm_diag.normal_ordered_kinetic()
+    for flux in flux_vals:
+        harm_diag.flux = flux
+        result_pot = harm_diag.normal_ordered_potential(order=4)
+        result_kin = harm_diag.normal_ordered_kinetic()
+
 # musnail
 if __name__ == "__main__":
-    flux = 0.3
+    flux = 0.25
+    num_pts = 11
+    flux_vals = np.linspace(0.0, 0.3, 8)
     alpha = 0.2
-    musnail = snail()
+    mysnail = snail()
+    mysnail.elements[0].ic = 1
+    mysnail.elements[2].ic = alpha
     spanning_tree = ["J1", "J2", "J3"]
     coordination_matrix = np.array([[1, 0, 0], [-1, 1, 0], [0, -1, 1], [0, 0, -1]])
     unitconverter = unitsConverter(current_units=1e-6)
-    EC = 0.2
-    ECJ = 2.0
+    EC = 0.02
+    ECJ = 0.2
     C = 1 / (2 * EC)
     CJ = 1 / (2 * ECJ)
     capacitance_matrix = np.array([[C + 2 * CJ, -CJ, 0], [-CJ, 2 * CJ, -CJ], [0, -CJ, 2 * CJ]])
@@ -372,15 +445,15 @@ if __name__ == "__main__":
         capacitance_matrix,
         coordination_matrix,
         spanning_tree,
-        musnail,
+        mysnail,
         node_vars_to_phase_vars,
         flux,
         unit_converter=unitconverter
     )
-    result_pot = harm_diag.normal_ordered_potential(order=4)
-    H = harm_diag.hamiltonian_from_sympy(result_pot)
-    result_kin = harm_diag.normal_ordered_kinetic()
-    result_kin_test = harm_diag._normal_ordered_kinetic_test()
+    for flux in flux_vals:
+        harm_diag.flux = flux
+        result_pot = harm_diag.normal_ordered_potential(order=4)
+        result_kin = harm_diag.normal_ordered_kinetic()
 
 
 if __name__ == "__main__":
@@ -416,34 +489,4 @@ if __name__ == "__main__":
     )
     result = harm_diag.normal_ordered_potential(order=3)
     result_kin = harm_diag.normal_ordered_kinetic()
-    print(0)
-
-
-
-if __name__ == "__main__":
-    flux = 0.0
-    snail = snail()
-    spanning_tree = ["J1", "J2", "J3"]
-    coordination_matrix = np.array([[1, 0, 0], [-1, 1, 0], [0, -1, 1], [0, 0, -1]])
-    # CJ_SI = 10.0  # fF
-    # C_SI = 100.0  # fF
-    unitconverter = unitsConverter(current_units=1e-8)
-    # CJ = unitconverter.convert_from_fF_to_NINA(CJ_SI)
-    # C = unitconverter.convert_from_fF_to_NINA(C_SI)
-    EC = 0.2
-    ECJ = 2.0
-    C = 1 / (2 * EC)
-    CJ = 1/ (2 * ECJ)
-    capacitance_matrix = np.array([[C + 2 * CJ, -CJ, 0], [-CJ, 2 * CJ, -CJ], [0, -CJ, 2 * CJ]])
-    node_vars_to_phase_vars = coordination_matrix[0:3, :]
-    harm_diag = HarmonicDiagonalization(
-        capacitance_matrix,
-        coordination_matrix,
-        spanning_tree,
-        snail,
-        node_vars_to_phase_vars,
-        flux,
-        unit_converter=unitconverter,
-    )
-    result = harm_diag.normal_ordered_potential(order=3)
     print(0)
