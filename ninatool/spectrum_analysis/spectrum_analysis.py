@@ -16,6 +16,11 @@ Phi0 = h / (2 * e)
 hbar = h / (2.0 * np.pi)
 JtoGHz = 10**(-9) / h
 
+NUM_POINTS = 1001 # number of points for default phase array
+NUM_PERIODS = 2 # number of periods for default phase array
+
+default_phase_array = NUM_PERIODS * 2 * np.pi * np.linspace(-.5, .5, NUM_POINTS)
+
 
 def id_wrap_ops(op: Qobj, idx: int, truncated_dims: list) -> Qobj:
     """
@@ -88,7 +93,8 @@ class HarmonicDiagonalization:
         self.unit_converter = unit_converter
 
     def find_minimum_node_variables(self) -> ndarray:
-        self.loop_instance.interpolate_results(2.0 * np.pi * self.flux)
+        self.loop_instance.free_phi = default_phase_array
+        self.loop_instance.interpolate_results(phi_grid=2.0 * np.pi * self.flux)
         minimum_loc_difference_phases = np.array(
             [
                 self.loop_instance.elements[idx].phi[0]
@@ -102,6 +108,7 @@ class HarmonicDiagonalization:
         return min_node_variables
 
     def gamma_matrix(self) -> ndarray:
+        # TODO add small corrections arising from normal ordering higher order terms in potential?
         """Returns linearized potential matrix
 
         We are imagining an arbitrary loop of JJs where we have
@@ -139,7 +146,8 @@ class HarmonicDiagonalization:
             nonzero_idxs = np.argwhere(node_var_spec)[:, 0]
             equilibrium_phase = minimum_location @ node_var_spec
             if self.loop_instance.elements[node_idx].name not in self.spanning_tree:
-                equilibrium_phase = equilibrium_phase - 2.0 * np.pi * self.flux
+                # TODO check this minus sign
+                equilibrium_phase = equilibrium_phase + 2.0 * np.pi * self.flux
             if len(nonzero_idxs) == 1:  # only a single node variable
                 gamma_matrix[
                     nonzero_idxs[0], nonzero_idxs[0]
@@ -213,7 +221,7 @@ class HarmonicDiagonalization:
             Ic = self.loop_instance.elements[node_idx].ic
             EJ = Ic * self.unit_converter.current_units * hbar * JtoGHz / (2 * e)
             if self.loop_instance.elements[node_idx].name not in self.spanning_tree:
-                phase = node_var_spec @ phi - 2.0 * np.pi * self.flux
+                phase = node_var_spec @ phi + 2.0 * np.pi * self.flux
             else:
                 phase = node_var_spec @ phi
             if isinstance(self.loop_instance.elements[node_idx], J):
@@ -406,7 +414,7 @@ if __name__ == "__main__":
     C = 1 / (2 * EC)
     CJ = 1/ (2 * ECJ)
     capacitance_matrix = np.array([[C + 2 * CJ, -CJ, 0], [-CJ, 2 * CJ, -CJ], [0, -CJ, 2 * CJ]])
-    node_vars_to_phase_vars = coordination_matrix[0:3, :]
+    node_vars_to_phase_vars = coordination_matrix[1:4, :]
     harm_diag = HarmonicDiagonalization(
         capacitance_matrix,
         coordination_matrix,
@@ -416,8 +424,6 @@ if __name__ == "__main__":
         flux,
         unit_converter=unitconverter,
     )
-    result_pot = harm_diag.normal_ordered_potential(order=4)
-    result_kin = harm_diag.normal_ordered_kinetic()
     for flux in flux_vals:
         harm_diag.flux = flux
         result_pot = harm_diag.normal_ordered_potential(order=4)
@@ -440,7 +446,8 @@ if __name__ == "__main__":
     C = 1 / (2 * EC)
     CJ = 1 / (2 * ECJ)
     capacitance_matrix = np.array([[C + 2 * CJ, -CJ, 0], [-CJ, 2 * CJ, -CJ], [0, -CJ, 2 * CJ]])
-    node_vars_to_phase_vars = coordination_matrix[0:3, :]
+    #
+    node_vars_to_phase_vars = coordination_matrix[1:4, :]
     harm_diag = HarmonicDiagonalization(
         capacitance_matrix,
         coordination_matrix,
