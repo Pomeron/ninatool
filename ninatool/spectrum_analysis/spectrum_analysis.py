@@ -1,3 +1,5 @@
+from typing import Optional
+
 import numpy as np
 import scipy as sp
 from numpy import ndarray
@@ -67,6 +69,14 @@ class HarmonicDiagonalization:
     node_vars_to_phase_vars: ndarray
         matrix specifying the transformation between the node and phase variables
     flux: float
+        flux through the loop
+    unit_converter: unitsConverter
+        unit converter to go between NINA units and standard GHz units
+    drive_strengths: ndarray
+        drive strengths at each node
+    drive_frequency: float
+        drive frequency (only one drive supported)
+
     """
 
     def __init__(
@@ -78,18 +88,27 @@ class HarmonicDiagonalization:
         node_vars_to_phase_vars: ndarray,
         flux: float,
         unit_converter: unitsConverter,
+        drive_strengths: Optional[ndarray] = None,
+        drive_frequency: float = 0.0,
     ):
         self.capacitance_matrix = capacitance_matrix
+        self.num_modes = self.capacitance_matrix.shape[0]
         self.coordination_matrix = coordination_matrix
         self.spanning_tree = spanning_tree
         self.loop_instance = loop_instance
         self.node_vars_to_phase_vars = node_vars_to_phase_vars
         self.flux = flux
-        self.num_modes = self.capacitance_matrix.shape[0]
+        if drive_strengths is not None:
+            self.drive_strengths = np.zeros(self.num_modes)
+        else:
+            self.drive_strengths = drive_strengths
+        self.drive_frequency = drive_frequency
         char_list = "a b c d e f g h i j k l m n o p q r s t u v w x y z".split()
         char_dag_list = [char + "\u2020" for char in char_list]
+        drive_coeff_list = ["\u03be" + char for char in char_list]
         self.lowering_ops = symbols(char_list[0: self.num_modes])
         self.raising_ops = symbols(char_dag_list[0: self.num_modes])
+        self.drive_coeffs = symbols(drive_coeff_list[0: self.num_modes])
         self.unit_converter = unit_converter
 
     def find_minimum_node_variables(self) -> ndarray:
@@ -273,19 +292,24 @@ class HarmonicDiagonalization:
             normal_mode_prefactors = np.sum(
                 [Xi[idx, :] * node_var_spec[idx] for idx in nonzero_idxs], axis=0
             )
+            # TODO what if inductor is closure branch?
             if isinstance(self.loop_instance.elements[node_idx], J):
                 if self.loop_instance.elements[node_idx].name not in self.spanning_tree:
-                    pot += -EJ * (self.expand_cosine(
-                        normal_mode_prefactors, op_list, order=order
-                    ) * np.cos(2.0 * np.pi * self.flux) + self.expand_sine(
-                        normal_mode_prefactors, op_list, order=order
-                    ) * np.sin(
-                        2.0 * np.pi * self.flux
-                    ))
+                    pot += -EJ * (self._expand_cosine_with_flux(normal_mode_prefactors, op_list, order=order)
+                                  * self._expand_cosine_c_numbers(normal_mode_prefactors, order=order)
+                                  - self._expand_sine_with_flux(normal_mode_prefactors, op_list, order=order)
+                                  * self._expand_sine_c_numbers(normal_mode_prefactors, order=order)
+                                  )
                 else:
-                    pot += -EJ * self.expand_cosine(normal_mode_prefactors, op_list, order=order)
+                    pot += -EJ * (self._expand_cosine(normal_mode_prefactors, op_list, order=order)
+                                  * self._expand_cosine_c_numbers(normal_mode_prefactors, order=order)
+                                  - self._expand_sine(normal_mode_prefactors, op_list, order=order)
+                                  * self._expand_sine_c_numbers(normal_mode_prefactors, order=order)
+                                  )
+            # Not so interested in drives that result in only linear terms
+            # so we neglect this for now
             elif isinstance(self.loop_instance.elements[node_idx], L):
-                pot += -EJ * self.expand_cosine(normal_mode_prefactors, op_list, order=2)
+                pot += -EJ * self._expand_cosine(normal_mode_prefactors, op_list, order=2)
             else:
                 raise RuntimeError("should only have inductors and junctions in the potential")
         pot = self._filter_small_coeffs_and_high_order(expand(pot), threshold=threshold, order=order)
@@ -301,26 +325,47 @@ class HarmonicDiagonalization:
                     new_term += term
         return new_term
 
+    def _expand_cosine_with_flux(self, normal_mode_prefactors, op_list, order=5):
+        # TODO check sign (negative flux?)
+        return (self._expand_cosine(
+            normal_mode_prefactors, op_list, order=order
+        ) * np.cos(2.0 * np.pi * self.flux) - self._expand_sine(
+            normal_mode_prefactors, op_list, order=order
+        ) * np.sin(
+            2.0 * np.pi * self.flux
+        ))
+
+    def _expand_sine_with_flux(self, normal_mode_prefactors, op_list, order=5):
+        # TODO check sign (negative flux?)
+        return (self._expand_sine(
+            normal_mode_prefactors, op_list, order=order
+        ) * np.cos(2.0 * np.pi * self.flux) + self._expand_cosine(
+            normal_mode_prefactors, op_list, order=order
+        ) * np.sin(
+            2.0 * np.pi * self.flux
+        ))
+
     def _expanded_sines(self, prefactors, op_strs, order):
+        """expand out a sine or a cosine where the last set of terms has been separated"""
         last_pref = [prefactors[-1], ]
         last_op = [op_strs[-1], ]
-        sin_allm1 = self.expand_sine(
+        sin_allm1 = self._expand_sine(
             prefactors[0:-1], op_strs[0:-1], order=order
         )
-        cos_1 = self.expand_cosine(
+        cos_1 = self._expand_cosine(
             last_pref, last_op, order=order,
         )
-        cos_allm1 = self.expand_cosine(
+        cos_allm1 = self._expand_cosine(
             prefactors[0:-1], op_strs[0:-1], order=order
         )
-        sin_1 = self.expand_sine(
+        sin_1 = self._expand_sine(
             last_pref, last_op, order=order,
         )
         return sin_allm1, cos_allm1, cos_1, sin_1
 
-    def expand_sine(self, prefactors, op_strs, order=5):
-        if len(prefactors) == len(op_strs) == 1:
-            xi = S(prefactors[0])
+    def _expand_sine(self, normal_mode_prefactors, op_strs, order=5):
+        if len(normal_mode_prefactors) == len(op_strs) == 1:
+            xi = S(normal_mode_prefactors[0])
             op, op_dag = op_strs[0]
             return sum(
                 [
@@ -337,13 +382,13 @@ class HarmonicDiagonalization:
             )
         else:
             sin_allm1, cos_allm1, cos_1, sin_1 = self._expanded_sines(
-                prefactors, op_strs, order
+                normal_mode_prefactors, op_strs, order
             )
             return sin_allm1 * cos_1 + cos_allm1 * sin_1
 
-    def expand_cosine(self, prefactors, op_strs, order=5):
-        if len(prefactors) == len(op_strs) == 1:
-            xi = S(prefactors[0])
+    def _expand_cosine(self, normal_mode_prefactors, op_strs, order=5):
+        if len(normal_mode_prefactors) == len(op_strs) == 1:
+            xi = S(normal_mode_prefactors[0])
             op, op_dag = op_strs[0]
             # cos[(xi / sqrt(2)) * (a + a^{\dag})]
             return sum(
@@ -360,9 +405,40 @@ class HarmonicDiagonalization:
             )
         else:
             sin_allm1, cos_allm1, cos_1, sin_1 = self._expanded_sines(
-                prefactors, op_strs, order
+                normal_mode_prefactors, op_strs, order
             )
             return cos_allm1 * cos_1 - sin_allm1 * sin_1
+
+    def _prefactors_c_number(self, prefactors):
+        Xi = self.Xi_matrix()
+        Xi_inv_T = sp.linalg.inv(Xi).T
+        omega_sq, _ = self.eigensystem_normal_modes()
+        # summation on i epsilon_i * Xi_inv_T_{i, \mu}
+        drive_strengths_normal_mode = self.drive_strengths @ Xi_inv_T
+        overall_drive_terms = 0.0
+        for mu in range(self.num_modes):
+            overall_drive_terms += (
+                (S(1) / np.sqrt(2))
+                * drive_strengths_normal_mode[mu]
+                * prefactors[mu]  # coefficients arising from the inductive element
+                * self.drive_coeffs[mu]  # include sympy term so we know its from drive
+                / S(np.sqrt(omega_sq)[mu] - self.drive_frequency)  # TODO check 2 pis
+        )
+        return overall_drive_terms
+
+    def _expand_cosine_c_numbers(self, prefactors, order=5):
+        overall_drive_terms = self._prefactors_c_number(prefactors)
+        result = 1.0
+        for idx in range(2, order, 2):
+            result += (-1)**(idx/2) * overall_drive_terms ** idx / factorial(idx)
+        return result
+
+    def _expand_sine_c_numbers(self, prefactors, order=5):
+        overall_drive_terms = self._prefactors_c_number(prefactors)
+        result = 0.0
+        for idx in range(1, order, 2):
+            result += (-1)**((idx+1 / S(2)) - 1) * overall_drive_terms ** idx / factorial(idx)
+        return result
 
     @staticmethod
     def return_coeff(symp_expr, poly):
@@ -415,6 +491,8 @@ if __name__ == "__main__":
     CJ = 1/ (2 * ECJ)
     capacitance_matrix = np.array([[C + 2 * CJ, -CJ, 0], [-CJ, 2 * CJ, -CJ], [0, -CJ, 2 * CJ]])
     node_vars_to_phase_vars = coordination_matrix[1:4, :]
+    drive_strengths = np.array([1, 0, 0])
+    drive_frequency=1.0
     harm_diag = HarmonicDiagonalization(
         capacitance_matrix,
         coordination_matrix,
@@ -423,6 +501,8 @@ if __name__ == "__main__":
         node_vars_to_phase_vars,
         flux,
         unit_converter=unitconverter,
+        drive_strengths=drive_strengths,
+        drive_frequency=drive_frequency
     )
     for flux in flux_vals:
         harm_diag.flux = flux
