@@ -289,7 +289,7 @@ class HarmonicDiagonalization:
                                   * self._expand_sine_c_numbers(normal_mode_prefactors, order=order)
                                   )
             # Not so interested in drives that result in only linear terms,
-            # so we neglect this for now
+            # so we neglect this possibility for now
             elif isinstance(self.loop_instance.elements[node_idx], L):
                 pot += -EJ * self._expand_cosine(normal_mode_prefactors, op_list, order=2)
             else:
@@ -419,7 +419,7 @@ class HarmonicDiagonalization:
         overall_drive_terms = self._prefactors_c_number(prefactors)
         result = 0.0
         for idx in range(1, order, 2):
-            result += (-1)**((idx+1 / S(2)) - 1) * overall_drive_terms ** idx / factorial(idx)
+            result += (-1)**(((idx+1) / S(2)) - 1) * overall_drive_terms ** idx / factorial(idx)
         return result
 
     @staticmethod
@@ -467,8 +467,8 @@ if __name__ == "__main__":
     UNITCONVERTER = unitsConverter(current_units=1e-8)
     # CJ = unitconverter.convert_from_fF_to_NINA(CJ_SI)
     # C = unitconverter.convert_from_fF_to_NINA(C_SI)
-    EC = 0.2
-    ECJ = 2.0
+    EC = 0.02
+    ECJ = 0.02
     C = 1 / (2 * EC)
     CJ = 1 / (2 * ECJ)
     CAPACITANCE_MATRIX = np.array([[C + 2 * CJ, -CJ, 0], [-CJ, 2 * CJ, -CJ], [0, -CJ, 2 * CJ]])
