@@ -5,12 +5,12 @@ import scipy as sp
 from numpy import ndarray
 from scipy.constants import h, e
 from scipy.linalg import eigh
-from sympy import S, symbols, factorial, sqrt, exp, expand, degree, degree_list
+from sympy import S, symbols, factorial, exp, expand, degree, degree_list
 from qutip import destroy, qeye, tensor, Qobj
 
 
 from ninatool.internal.structures import loop
-from ninatool.internal.elements import L, J, C
+from ninatool.internal.elements import L, J
 from ninatool.circuits.base_circuits import snail
 from ninatool.internal.tools import unitsConverter
 
@@ -18,8 +18,8 @@ Phi0 = h / (2 * e)
 hbar = h / (2.0 * np.pi)
 JtoGHz = 10**(-9) / h
 
-NUM_POINTS = 1001 # number of points for default phase array
-NUM_PERIODS = 2 # number of periods for default phase array
+NUM_POINTS = 1001  # number of points for default phase array
+NUM_PERIODS = 2  # number of periods for default phase array
 
 default_phase_array = NUM_PERIODS * 2 * np.pi * np.linspace(-.5, .5, NUM_POINTS)
 
@@ -63,7 +63,7 @@ class HarmonicDiagonalization:
         the potential element. For example for an element of the form -EJ * cos(\phi_2 - \phi_0), the corresponding
         row would look like -1, 0, 1
     spanning_tree: list
-        list of the elements in the loop_instance that form the spanning tree
+        elements in the loop_instance that form the spanning tree
     loop_instance: loop
         circuit specified in the NINA way
     node_vars_to_phase_vars: ndarray
@@ -98,7 +98,7 @@ class HarmonicDiagonalization:
         self.loop_instance = loop_instance
         self.node_vars_to_phase_vars = node_vars_to_phase_vars
         self.flux = flux
-        if drive_strengths is not None:
+        if drive_strengths is None:
             self.drive_strengths = np.zeros(self.num_modes)
         else:
             self.drive_strengths = drive_strengths
@@ -192,16 +192,6 @@ class HarmonicDiagonalization:
 
     def eigensystem_normal_modes(self) -> (ndarray, ndarray):
         """Returns squared normal mode frequencies, matrix of eigenvectors
-
-        Parameters
-        ----------
-        minimum_index: int
-            integer specifying which minimum to linearize around,
-            0<=minimum<= total number of minima
-
-        Returns
-        -------
-        ndarray, ndarray
         """
         omega_squared, normal_mode_eigenvectors = eigh(
             self.gamma_matrix(), b=self.capacitance_matrix
@@ -214,14 +204,6 @@ class HarmonicDiagonalization:
         \Gamma \Xi = \Omega/Z0. The \Xi matrix
         simultaneously diagonalizes the capacitance and effective
         inductance matrices by a congruence transformation.
-
-        Parameters
-        ----------
-        None
-
-        Returns
-        -------
-        ndarray
         """
         omega_squared_array, eigenvectors = self.eigensystem_normal_modes()
         Z0 = 0.25
@@ -306,7 +288,7 @@ class HarmonicDiagonalization:
                                   - self._expand_sine(normal_mode_prefactors, op_list, order=order)
                                   * self._expand_sine_c_numbers(normal_mode_prefactors, order=order)
                                   )
-            # Not so interested in drives that result in only linear terms
+            # Not so interested in drives that result in only linear terms,
             # so we neglect this for now
             elif isinstance(self.loop_instance.elements[node_idx], L):
                 pot += -EJ * self._expand_cosine(normal_mode_prefactors, op_list, order=2)
@@ -423,7 +405,7 @@ class HarmonicDiagonalization:
                 * prefactors[mu]  # coefficients arising from the inductive element
                 * self.drive_coeffs[mu]  # include sympy term so we know its from drive
                 / S(np.sqrt(omega_sq)[mu] - self.drive_frequency)  # TODO check 2 pis
-        )
+            )
         return overall_drive_terms
 
     def _expand_cosine_c_numbers(self, prefactors, order=5):
@@ -466,114 +448,113 @@ class HarmonicDiagonalization:
                 create_degree = degree(sym_H_term, gen=sym_create_op)
                 H_term = H_term * annihilation_ops[idx].dag() ** int(create_degree)
             for idx, sym_lower_op in enumerate(self.lowering_ops):
-                create_degree = degree(sym_H_term, gen=sym_lower_op)
-                H_term = H_term * annihilation_ops[idx] ** int(create_degree)
+                lower_degree = degree(sym_H_term, gen=sym_lower_op)
+                H_term = H_term * annihilation_ops[idx] ** int(lower_degree)
             total_H += H_term
         return total_H
 
 
 # SNAIL
 if __name__ == "__main__":
-    flux = 0.04
-    snail = snail()
-    snail.interpolate_results(2.0 * np.pi * 0.04)
+    FLUX = 0.3
+    SNAIL = snail()
+    SNAIL.interpolate_results(2.0 * np.pi * 0.04)
     flux_vals = np.linspace(0.0, 0.3, 8)
-    spanning_tree = ["J1", "J2", "J3"]
-    coordination_matrix = np.array([[1, 0, 0], [-1, 1, 0], [0, -1, 1], [0, 0, -1]])
+    SPANNING_TREE = ["J1", "J2", "J3"]
+    COORDINATION_MATRIX = np.array([[1, 0, 0], [-1, 1, 0], [0, -1, 1], [0, 0, -1]])
     # CJ_SI = 10.0  # fF
     # C_SI = 100.0  # fF
-    unitconverter = unitsConverter(current_units=1e-8)
+    UNITCONVERTER = unitsConverter(current_units=1e-8)
     # CJ = unitconverter.convert_from_fF_to_NINA(CJ_SI)
     # C = unitconverter.convert_from_fF_to_NINA(C_SI)
     EC = 0.2
     ECJ = 2.0
     C = 1 / (2 * EC)
-    CJ = 1/ (2 * ECJ)
-    capacitance_matrix = np.array([[C + 2 * CJ, -CJ, 0], [-CJ, 2 * CJ, -CJ], [0, -CJ, 2 * CJ]])
-    node_vars_to_phase_vars = coordination_matrix[1:4, :]
-    drive_strengths = np.array([1, 0, 0])
-    drive_frequency=1.0
+    CJ = 1 / (2 * ECJ)
+    CAPACITANCE_MATRIX = np.array([[C + 2 * CJ, -CJ, 0], [-CJ, 2 * CJ, -CJ], [0, -CJ, 2 * CJ]])
+    NODE_VARS_TO_PHASE_VARS = COORDINATION_MATRIX[1:4, :]
+    DRIVE_STRENGTHS = np.array([1, 0, 0])
+    DRIVE_FREQUENCY = 1.0
     harm_diag = HarmonicDiagonalization(
-        capacitance_matrix,
-        coordination_matrix,
-        spanning_tree,
-        snail,
-        node_vars_to_phase_vars,
-        flux,
-        unit_converter=unitconverter,
-        drive_strengths=drive_strengths,
-        drive_frequency=drive_frequency
+        CAPACITANCE_MATRIX,
+        COORDINATION_MATRIX,
+        SPANNING_TREE,
+        SNAIL,
+        NODE_VARS_TO_PHASE_VARS,
+        FLUX,
+        unit_converter=UNITCONVERTER,
+        drive_strengths=DRIVE_STRENGTHS,
+        drive_frequency=DRIVE_FREQUENCY
     )
-    for flux in flux_vals:
-        harm_diag.flux = flux
-        result_pot = harm_diag.normal_ordered_potential(order=4)
-        result_kin = harm_diag.normal_ordered_kinetic()
+    harm_diag.flux = FLUX
+    result_pot = harm_diag.normal_ordered_potential(order=4)
+    result_kin = harm_diag.normal_ordered_kinetic()
 
 # musnail
 if __name__ == "__main__":
-    flux = 0.25
+    FLUX = 0.25
     num_pts = 11
     flux_vals = np.linspace(0.0, 0.3, 8)
     alpha = 0.2
-    mysnail = snail()
-    mysnail.elements[0].ic = 1
-    mysnail.elements[2].ic = alpha
-    spanning_tree = ["J1", "J2", "J3"]
-    coordination_matrix = np.array([[1, 0, 0], [-1, 1, 0], [0, -1, 1], [0, 0, -1]])
-    unitconverter = unitsConverter(current_units=1e-6)
+    SNAIL_2 = snail()
+    SNAIL_2.elements[0].ic = 1
+    SNAIL_2.elements[2].ic = alpha
+    SPANNING_TREE = ["J1", "J2", "J3"]
+    COORDINATION_MATRIX = np.array([[1, 0, 0], [-1, 1, 0], [0, -1, 1], [0, 0, -1]])
+    UNITCONVERTER = unitsConverter(current_units=1e-6)
     EC = 0.02
     ECJ = 0.2
     C = 1 / (2 * EC)
     CJ = 1 / (2 * ECJ)
-    capacitance_matrix = np.array([[C + 2 * CJ, -CJ, 0], [-CJ, 2 * CJ, -CJ], [0, -CJ, 2 * CJ]])
+    CAPACITANCE_MATRIX = np.array([[C + 2 * CJ, -CJ, 0], [-CJ, 2 * CJ, -CJ], [0, -CJ, 2 * CJ]])
     #
-    node_vars_to_phase_vars = coordination_matrix[1:4, :]
+    NODE_VARS_TO_PHASE_VARS = COORDINATION_MATRIX[1:4, :]
     harm_diag = HarmonicDiagonalization(
-        capacitance_matrix,
-        coordination_matrix,
-        spanning_tree,
-        mysnail,
-        node_vars_to_phase_vars,
-        flux,
-        unit_converter=unitconverter
+        CAPACITANCE_MATRIX,
+        COORDINATION_MATRIX,
+        SPANNING_TREE,
+        SNAIL_2,
+        NODE_VARS_TO_PHASE_VARS,
+        FLUX,
+        unit_converter=UNITCONVERTER
     )
-    for flux in flux_vals:
-        harm_diag.flux = flux
+    for FLUX in flux_vals:
+        harm_diag.flux = FLUX
         result_pot = harm_diag.normal_ordered_potential(order=4)
         result_kin = harm_diag.normal_ordered_kinetic()
 
 
 if __name__ == "__main__":
-    flux = 0.0
-    order = 5
-    J0 = J(ic=40000.0, order=order, name="J0")
-    L0 = L(L=1000000.0, order=order, name="L0")
-    unitconverter = unitsConverter(current_units=1e-9)
+    FLUX = 0.0
+    ORDER = 5
+    J0 = J(ic=40000.0, order=ORDER, name="J0")
+    L0 = L(L=1000000.0, order=ORDER, name="L0")
+    UNITCONVERTER = unitsConverter(current_units=1e-9)
     left_elements = [J0, ]
     right_elements = [L0, ]
-    myrfsquid = loop(
+    RFSQUID = loop(
         left_branch=left_elements,
         right_branch=right_elements,
         stray_inductance=False,
         name="myrfsquid"
     )
-    spanning_tree = ["J0", ]
-    coordination_matrix = np.array([[1, ],
+    SPANNING_TREE = ["J0", ]
+    COORDINATION_MATRIX = np.array([[1, ],
                                     [-1, ]])
     # CJ_SI = 10.0  # fF
     # ECJ = e**2 / (2 * CJ_SI * 10**(-15)) * JtoGHz
     ECJ = 2.0  # GHz
-    capacitance_matrix = np.array([[1 / (2 * ECJ), ]])
-    node_vars_to_phase_vars = np.array([[1, ], ])
+    CAPACITANCE_MATRIX = np.array([[1 / (2 * ECJ), ]])
+    NODE_VARS_TO_PHASE_VARS = np.array([[1, ], ])
     harm_diag = HarmonicDiagonalization(
-        capacitance_matrix,
-        coordination_matrix,
-        spanning_tree,
-        myrfsquid,
-        node_vars_to_phase_vars,
-        flux,
-        unit_converter=unitconverter,
+        CAPACITANCE_MATRIX,
+        COORDINATION_MATRIX,
+        SPANNING_TREE,
+        RFSQUID,
+        NODE_VARS_TO_PHASE_VARS,
+        FLUX,
+        unit_converter=UNITCONVERTER,
     )
-    result = harm_diag.normal_ordered_potential(order=3)
+    RESULT = harm_diag.normal_ordered_potential(order=3)
     result_kin = harm_diag.normal_ordered_kinetic()
     print(0)
