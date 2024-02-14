@@ -273,17 +273,14 @@ class branch(Nlind):
         logging.debug('called check_multivalued method of branch '
                       + str(self.name))
         
-        if self.is_free:
-            free_phi = self.free_phi
-            self.free_phi = linspace(0, pi, 1001)
-            max_phi = max(self.phi)
-            
-            if max_phi > pi:
-                self.__multivalued = True
-            else:
-                self.__multivalued = False
-            self.free_phi = free_phi
-            
+        self.__constrained_L0 = \
+            sum(other.L0 for other in self.__constrained_elements)
+        
+        self.__beta = self.__constrained_L0 / self.free_element.L0
+        
+        if self.beta > 1 and self.__is_free:
+            logging.info('Branch ' + str(self.name) + ' is multivalued.')
+            self.__multivalued = True
         else:
             self.__multivalued = False
 
@@ -356,9 +353,10 @@ class branch(Nlind):
         self.calc_inductance()
         self.calc_coeffs()
         
-    def interpolate_results(self, phi_grid = default_phase_array):
+    def interpolate_results(self, phi_grid = default_phase_array, 
+                            bypass_multivalued = False):
         
-            if self.__multivalued:
+            if self.__multivalued and not bypass_multivalued:
                 print('Cannot interpolate multivalued results (yet).')
             else:
                 for elem in self.elements:
@@ -562,9 +560,11 @@ class loop(Nlind):
         
         self.calc_coeffs()
         
-    def interpolate_results(self, phi_grid = default_phase_array):
+    def interpolate_results(self, phi_grid = default_phase_array, 
+                            bypass_multivalued = False):
         
-        self.associated_branch.interpolate_results(phi_grid = phi_grid)
+        self.associated_branch.interpolate_results(phi_grid = phi_grid, 
+                                                   bypass_multivalued=bypass_multivalued)
         self.update()
         
     def calc_Nloops_mask(self):
